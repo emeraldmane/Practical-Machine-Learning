@@ -1,0 +1,161 @@
+---
+title: "Practical Machine Learning Project: Human Activity Recognition"
+author: "Nathaniel Landi"
+date: "Sunday, November 23, 2014"
+output: html_document
+---
+##Project Background
+     Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+##Data
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har.
+
+##Loading the Data
+First we must load the datasets, and explore their many facets to get an idea of the data's capacity.
+
+```{r}
+testdata <- read.csv(file = 'pml-testing.csv', na.strings = c('NA','#DIV/0!',''))
+traindata <- read.csv(file = 'pml-training.csv', na.strings = c('NA','#DIV/0!',''))
+
+dim(traindata); dim(testdata)
+```
+
+##Preprocessing Both Datasets
+Next we must clean the data by converting all the blanks in both datasets to NAs, and then remove all the NAs from the data. This was done to both the training data & the test data.
+
+```{r}
+blankdata <- which(traindata=="",arr.ind=T)
+traindata[blankdata]<-NA
+
+traindata_na = sapply(traindata, function(x) {sum(is.na(x))})
+table(traindata_na)
+
+traindata_na <- traindata[ , colSums(is.na(traindata)) == 0]
+dim(traindata_na)
+```
+
+```{r}
+blankdata <- which(testdata=="",arr.ind=T)
+testdata[blankdata]<-NA
+
+testdata_na = sapply(testdata, function(x) {sum(is.na(x))})
+table(testdata_na)
+
+testdata_na <- testdata[ , colSums(is.na(testdata)) == 0]
+dim(testdata_na)
+```
+
+###Removal of Unnecessary Non Numerical Values 
+The unnecessary non numerical values were removed, so that the data could be more precisely trained just using the unrelated variables to reduce variance.
+
+```{r}
+traindata_new <-traindata_na[,-c(1:7)]
+testdata_new <-testdata_na[,-c(1:7)]
+
+dim(traindata_new); dim(testdata_new)
+```
+
+###Checking for near zero values
+
+The data was checked for either predictors that have one unique value (i.e. are zero variance predictors) or predictors that have very few unique values relative to the number of samples and the ratio of the frequency of the most common value to the frequency of the second most common value is large.
+
+```{r}
+library(caret)
+
+zeroVar = nearZeroVar(traindata_new[sapply(traindata_new, is.numeric)], saveMetrics = TRUE)
+traindata_nonzerovar = traindata_new[,zeroVar[, 'nzv']==0]
+dim(traindata_nonzerovar)
+```
+
+##Removing Variables with High Correlation
+Variables with extremely high correlation (>90%) were then removed to reduce collinearity. This way the model is statistically significant in predicting the manner in which the participants did the exercise. 
+
+```{r}
+correlmatrix <- cor(na.omit(traindata_nonzerovar[sapply(traindata_nonzerovar, is.numeric)]))
+dim(correlmatrix)
+
+no_correl_var = findCorrelation(correlmatrix, cutoff = .90, verbose = T)
+traindata_nocorrel = traindata_nonzerovar[,-no_correl_var]
+
+dim(traindata_nocorrel)
+```
+We ended up with 54 columns from the original 160 making the model training effective.
+
+##Splitting the Data for Cross Validation
+To avoid overfitting the model, the training data is subsetted into 60% train and 40% test subsets. A seed is set to obtain the same set of random samples whenever the code is run.
+
+```{r}
+set.seed(1200)
+subsets <- createDataPartition(y=traindata_nocorrel$classe, p=0.6, list=F)
+traindata_subset <- traindata_nocorrel[subsets, ] 
+testdata_subset <- traindata_nocorrel[-subsets, ]
+dim(traindata_subset); dim(testdata_subset)
+```
+
+##Random Forest Model
+A random forest model was chosen to do the predicting, since it averages the trees created to reduce the overall variance of its predictions. This makes it more reliable than a decision tree for this project. We use in particular 4-fold crossing validation. 
+
+```{r}
+RF_model <- train(classe ~ .,
+                  data = traindata_subset, 
+                  method = 'rf',
+                  prox = T,
+                  trControl = trainControl(method = "cv", 
+                                          number = 4, 
+                                          allowParallel = T, 
+                                          verboseIter = T))
+print(RF_model)
+```
+
+##Out of Sample Accuracy
+The out of sample accuracy was then calculated to determine the accuracy of the predictions done on the 40% test subset.
+
+```{r}
+RF_model_predict <- predict(RF_model,testdata_subset)
+
+RF_model_confusionmatrix <- confusionMatrix(RF_model_predict,testdata_subset$classe)
+
+RF_model_confusionmatrix
+```
+
+The accuracy of the model is 0.9881. 
+```{r}
+dim(testdata_subset)
+
+out_sample_errorpredict <- predict(RF_model, testdata_subset)
+
+out_sample_error_accuracy <- sum(out_sample_errorpredict == testdata_subset$classe)/length(out_sample_errorpredict)
+
+out_sample_error <- 1 - out_sample_error_accuracy
+
+err <- out_sample_error*100
+paste0("Out of Sample Error is ", round(err,digits=2),"%")
+```
+
+Considering that the test set is a sample size of 20, an accuracy rate well above 98% is sufficient to expect that few or none of the test samples will be mis-classified.
+
+##Project Predictions
+The testing data can now be predicted using the Random Forest Model constructed above.
+
+```{r}
+testing_prediction <- predict(RF_model, testdata_new)
+testing_prediction <- as.character(testing_prediction)
+testing_prediction
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(testing_prediction)
+```
+
+##Reference
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
